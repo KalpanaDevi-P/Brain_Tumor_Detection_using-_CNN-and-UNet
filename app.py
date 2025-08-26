@@ -1081,9 +1081,16 @@ import numpy as np
 import cv2
 import os
 from fpdf import FPDF
+import requests
 
-import os, requests
+app = Flask(__name__)
+app.secret_key = "supersecretkey"
+UPLOAD_FOLDER = "static/uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# ================================
+# Utility: Download model if not exists
+# ================================
 def download_model(url, filename):
     if not os.path.exists(filename):
         print(f"Downloading {filename} from {url}...")
@@ -1093,35 +1100,29 @@ def download_model(url, filename):
             f.write(r.content)
         print("Download complete.")
 
-app = Flask(__name__)
-app.secret_key = "supersecretkey"
-UPLOAD_FOLDER = "static/uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-download_model(
-    "https://github.com/KalpanaDevi-P/Brain_Tumor_Detection_using-_CNN-and-UNet/releases/download/v1.0.0/brain_tumor_mobilenetv2_final.h5",
-    "brain_tumor_mobilenetv2_final.h5"
-)
-
-download_model(
-    "https://github.com/KalpanaDevi-P/Brain_Tumor_Detection_using-_CNN-and-UNet/releases/download/v1.0.0/unet_brain_tumor_final.pth",
-    "unet_brain_tumor_final.pth"
-)
-
-
 # ================================
-# 1. Load Classification Model
+# Lazy Load: Classification Model
 # ================================
 CLASS_MODEL_PATH = "brain_tumor_mobilenetv2_final.h5"
 CLASSES_PATH = "class_indices.json"
+clf_model = None
+idx_to_class = None
 
-clf_model = load_model(CLASS_MODEL_PATH)
-with open(CLASSES_PATH, "r") as f:
-    class_indices = json.load(f)
-idx_to_class = {v: k for k, v in class_indices.items()}
+def get_class_model():
+    global clf_model, idx_to_class
+    if clf_model is None:
+        download_model(
+            "https://github.com/KalpanaDevi-P/Brain_Tumor_Detection_using-_CNN-and-UNet/releases/download/v1.0.0/brain_tumor_mobilenetv2_final.h5",
+            CLASS_MODEL_PATH
+        )
+        clf_model = load_model(CLASS_MODEL_PATH)
+        with open(CLASSES_PATH, "r") as f:
+            class_indices = json.load(f)
+        idx_to_class = {v: k for k, v in class_indices.items()}
+    return clf_model, idx_to_class
 
 # ================================
-# 2. Define UNet Segmentation
+# Lazy Load: UNet Segmentation
 # ================================
 class UNet(nn.Module):
     def __init__(self, in_channels=3, out_channels=1):
@@ -1167,15 +1168,24 @@ class UNet(nn.Module):
         return out
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-seg_model = UNet().to(device)
-seg_model.load_state_dict(torch.load("unet_brain_tumor_final.pth", map_location=device))
-seg_model.eval()
-
+seg_model = None
 img_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize([0.5,0.5,0.5],[0.5,0.5,0.5])
 ])
+
+def get_seg_model():
+    global seg_model
+    if seg_model is None:
+        download_model(
+            "https://github.com/KalpanaDevi-P/Brain_Tumor_Detection_using-_CNN-and-UNet/releases/download/v1.0.0/unet_brain_tumor_final.pth",
+            "unet_brain_tumor_final.pth"
+        )
+        seg_model = UNet().to(device)
+        seg_model.load_state_dict(torch.load("unet_brain_tumor_final.pth", map_location=device))
+        seg_model.eval()
+    return seg_model
 
 # ================================
 # 3. Routes
@@ -1197,11 +1207,18 @@ def classification():
     if not filepath:
         return redirect(url_for('upload'))
 
+    # Lazy load model
+    try:
+        model, idx_to_class = get_class_model()
+    except Exception as e:
+        return render_template("loading.html")
+
+
     image = Image.open(filepath).convert("RGB")
     img_resized = image.resize((224, 224))
     img_array = img_to_array(img_resized)
     img_array = np.expand_dims(img_array, axis=0)/255.0
-    predictions = clf_model.predict(img_array)
+    predictions = model.predict(img_array)
     pred_idx = np.argmax(predictions[0])
     pred_class = idx_to_class[pred_idx]
     confidence = predictions[0][pred_idx]*100
@@ -1223,12 +1240,19 @@ def segmentation():
     if not filepath or pred_class.lower() == "notumor":
         return "<h3>No tumor detected for segmentation</h3>"
 
+    # Lazy load segmentation model
+    try:
+        model = get_seg_model()
+    except Exception as e:
+        return render_template("loading.html")
+
+
     image = Image.open(filepath).convert("RGB")
     input_tensor = img_transform(image).unsqueeze(0).to(device)
     img_np = np.array(image.resize((224, 224)))
 
     with torch.no_grad():
-        output = seg_model(input_tensor)
+        output = model(input_tensor)
         pred_mask = (output.squeeze().cpu().numpy() > 0.5).astype("uint8")
 
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
@@ -1286,7 +1310,7 @@ def segmentation():
         tumor_location = "N/A"
         mask_path, heatmap_path, bbox_path = None, None, None
 
-    # Store values in session as Python native types
+    # Store values in session
     session['tumor_size'] = int(tumor_size)
     session['tumor_percentage'] = float(tumor_percentage)
     session['tumor_location'] = tumor_location
@@ -1329,7 +1353,6 @@ def download_report():
     pdf.cell(0, 10, f"Tumor Location: {tumor_location}", ln=True)
     pdf.ln(10)
 
-    # Add images if exist
     for img_path, title in zip([filepath, mask_path, heatmap_path, bbox_path],
                                ["Original Image", "Tumor Mask", "Heatmap Overlay", "Bounding Box"]):
         if os.path.exists(img_path):
