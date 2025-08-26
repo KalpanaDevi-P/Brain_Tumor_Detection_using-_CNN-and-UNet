@@ -1,0 +1,9 @@
+flask
+tensorflow
+torch
+torchvision
+pillow
+numpy
+opencv-python
+fpdf
+gunicorn
