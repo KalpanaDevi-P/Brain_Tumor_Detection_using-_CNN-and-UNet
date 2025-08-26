@@ -1082,10 +1082,32 @@ import cv2
 import os
 from fpdf import FPDF
 
+import os, requests
+
+def download_model(url, filename):
+    if not os.path.exists(filename):
+        print(f"Downloading {filename} from {url}...")
+        r = requests.get(url)
+        r.raise_for_status()
+        with open(filename, "wb") as f:
+            f.write(r.content)
+        print("Download complete.")
+
 app = Flask(__name__)
 app.secret_key = "supersecretkey"
 UPLOAD_FOLDER = "static/uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+download_model(
+    "https://github.com/KalpanaDevi-P/Brain_Tumor_Detection_using-_CNN-and-UNet/releases/download/v1.0.0/brain_tumor_mobilenetv2_final.h5",
+    "brain_tumor_mobilenetv2_final.h5"
+)
+
+download_model(
+    "https://github.com/KalpanaDevi-P/Brain_Tumor_Detection_using-_CNN-and-UNet/releases/download/v1.0.0/unet_brain_tumor_final.pth",
+    "unet_brain_tumor_final.pth"
+)
+
 
 # ================================
 # 1. Load Classification Model
